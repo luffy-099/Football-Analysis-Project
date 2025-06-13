@@ -1,0 +1,15 @@
+names:
+- ball
+- goalkeeper
+- players
+- referee
+nc: 4
+roboflow:
+  license: CC BY 4.0
+  project: players-detection-zirjp
+  url: https://universe.roboflow.com/apvc-project/players-detection-zirjp/dataset/1
+  version: 1
+  workspace: apvc-project
+test: ../test/images
+train: Players-Detection-1/train/images
+val: Players-Detection-1/valid/images
