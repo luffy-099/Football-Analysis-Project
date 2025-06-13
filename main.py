@@ -1,4 +1,4 @@
-from utils import read_video, save_video
+from utils import read_video, save_video, FeatureExtractor
 from trackers import Tracker
 import time
 import cv2
@@ -6,13 +6,16 @@ from team_assigner import TeamAssigner
 from player_ball_assigner import PlayerBallAssigner
 from camera_movement_estimator import CameraMovementEstimator
 import numpy as np
+from collections import Counter
 
 def main():
     # Read video
     video_frames = read_video("input_videos/trim1.mp4")
 
     # Initialize tracker
-    tracker = Tracker("models/best_12Jun.pt")
+    tracker = Tracker("models/best_tuned.pt")
+     # Initialize feature extractor
+    feature_extractor = FeatureExtractor(device='cpu')
 
     tracks = tracker.get_object_tracks(
         video_frames,
@@ -32,8 +35,10 @@ def main():
     camera_movement_estimator.add_adjust_positions_to_tracks(tracks, camera_movement_per_frame)
     
 
-    #Interpolate player positions
-    tracks = tracker.interpolate_tracks(tracks, key='players')
+    # Interpolate player positions using embeddings
+    tracks = tracker.interpolate_tracks_with_embeddings(
+        tracks, video_frames, key='players', extract_embedding=feature_extractor
+    )
 
     #Interpolate ball positions
     tracks['ball'] = tracker.interpolate_ball_positions(tracks['ball'])
@@ -84,7 +89,27 @@ def main():
     )
 
     # Save video
-    save_video(output_video_frames, "output_videos/train1_possesion.mp4")
+    save_video(output_video_frames, "output_videos/train1_possesion.avi")
+
+
+    player_team_votes = {}
+
+    for frame_num, player_tracks in enumerate(tracks['players']):
+        for player_id, track in player_tracks.items():
+            team = track.get('team')
+            if team is not None:
+                if player_id not in player_team_votes:
+                    player_team_votes[player_id] = []
+                player_team_votes[player_id].append(team)
+
+    # Now, assign the most common team to each player in all frames
+    for frame_num, player_tracks in enumerate(tracks['players']):
+        for player_id, track in player_tracks.items():
+            if player_id in player_team_votes:
+                most_common_team = Counter(player_team_votes[player_id]).most_common(1)[0][0]
+                tracks['players'][frame_num][player_id]['team'] = most_common_team
+                # Optionally, update team_color as well
+                tracks['players'][frame_num][player_id]['team_color'] = team_assigner.team_colors[most_common_team]
 
 
 if __name__ == "__main__":

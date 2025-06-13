@@ -13,6 +13,8 @@ class Tracker:
     def __init__(self, model_path):
         self.model = YOLO(model_path)
         self.tracker = sv.ByteTrack()
+        self.display_id_map ={}
+        self.next_display_id = 1
 
     def add_positition_to_track(self,tracks):
         for object, object_tracks in tracks.items():
@@ -192,7 +194,6 @@ class Tracker:
 
         return frame
 
-
     def draw_annotations(self,video_frames,tracks,team_ball_control):
         output_video_frames = []
         for frame_num, frame in enumerate(video_frames):
@@ -204,8 +205,14 @@ class Tracker:
 
             #Draw players
             for track_id, player in player_dict.items():
+                #Remap track_id to a contiguous display ID
+                if track_id not in self.display_id_map:
+                    self.display_id_map[track_id] = self.next_display_id
+                    self.next_display_id += 1
+                shown_id = self.display_id_map[track_id]
+
                 color = player.get('team_color', (0, 0, 255))  # Default to red if no team color
-                frame = self.draw_ellipse(frame, player['bbox'],color, track_id)
+                frame = self.draw_ellipse(frame, player['bbox'],color, shown_id)
 
                 if player.get('has_ball', False):
                     frame = self.draw_triangle(frame, player['bbox'], (0, 0, 255))  # Draw triangle for player with ball
@@ -226,7 +233,7 @@ class Tracker:
         
         return output_video_frames
     
-    def interpolate_tracks(self, tracks, key='players'):
+    def interpolate_tracks(self, tracks, key='players'):    
         """
         Linearly interpolate missing object positions in tracks[key].
         Works for 'players', 'ball', or 'referee'.
@@ -253,5 +260,48 @@ class Tracker:
                             start_bbox[k] + (end_bbox[k] - start_bbox[k]) * j / gap
                             for k in range(4)
                         ]
+                        frames[start_frame + j][track_id] = {'bbox': interp_bbox}
+        return tracks
+    
+    def interpolate_tracks_with_embeddings(self, tracks, video_frames, key='players', extract_embedding=None):
+        """
+        Interpolate missing object positions using both linear interpolation and visual embeddings.
+        extract_embedding: function(frame, bbox) -> np.array (embedding vector)
+        """
+        frames = tracks[key]
+        track_ids = set()
+        for frame_dict in frames:
+            track_ids.update(frame_dict.keys())
+
+        for track_id in track_ids:
+            # Collect all frames where this track_id exists
+            present = [(i, frame_dict[track_id]['bbox']) for i, frame_dict in enumerate(frames) if track_id in frame_dict]
+            if len(present) < 2:
+                continue  # Need at least two detections to interpolate
+
+            # Optionally, extract embeddings for present detections
+            embeddings = {}
+            if extract_embedding:
+                for i, bbox in present:
+                    embeddings[i] = extract_embedding(video_frames[i], bbox)
+
+            for idx in range(len(present) - 1):
+                start_frame, start_bbox = present[idx]
+                end_frame, end_bbox = present[idx + 1]
+                gap = end_frame - start_frame
+                if gap > 1:
+                    for j in range(1, gap):
+                        interp_bbox = [
+                            start_bbox[k] + (end_bbox[k] - start_bbox[k]) * j / gap
+                            for k in range(4)
+                        ]
+                        # Optionally, adjust interp_bbox using embeddings
+                        if extract_embedding:
+                            emb_start = embeddings[start_frame]
+                            emb_end = embeddings[end_frame]
+                            # You could blend or select based on similarity, or use a weighted average
+                            # For simplicity, we just use linear interpolation here
+                            # Advanced: Use embedding similarity to nearby detections to refine interp_bbox
+
                         frames[start_frame + j][track_id] = {'bbox': interp_bbox}
         return tracks

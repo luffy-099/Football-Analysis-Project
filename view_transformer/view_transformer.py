@@ -1,11 +1,11 @@
 class ViewTransformer():
     def __init__(self):
-        court_width = 68
-        court_length = 23.32
+        court_width = 65
+        court_length = 105
 
         self.pixel_vertices = np.array(
             [110,1035],
-            
+
         )
 
     def transform(self, text):
