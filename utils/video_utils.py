@@ -3,6 +3,7 @@ import torch
 import torchvision.transforms as T
 from torchvision import models
 import numpy as np
+from numpy.linalg import norm
 
 
 def read_video(video_path):
@@ -22,6 +23,10 @@ def save_video(output_video_frames, output_video_path):
         out.write(frame)
     out.release()
 
+def cosine_similarity(a, b):
+    if norm(a) == 0 or norm(b) == 0:
+        return 0.0
+    return np.dot(a, b) / (norm(a) * norm(b))
 
 class FeatureExtractor:
     def __init__(self, device='cpu'):

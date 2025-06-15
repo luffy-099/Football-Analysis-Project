@@ -7,14 +7,21 @@ import numpy as np
 import sys
 import pandas as pd
 sys.path.append('../')
-from utils import get_center_of_bbox, get_bbox_width, get_foot_position
+from utils import get_center_of_bbox, get_bbox_width, get_foot_position, cosine_similarity
+from team_assigner import TeamAssigner
 
 class Tracker:
     def __init__(self, model_path):
         self.model = YOLO(model_path)
-        self.tracker = sv.ByteTrack()
+        self.tracker = sv.ByteTrack(
+            track_activation_threshold=0.5,      # Lower for more tracks, higher for more stable tracks
+            lost_track_buffer=80,                # Higher to keep tracks alive longer during occlusion
+            minimum_matching_threshold=0.8,      # Higher for stricter matching
+            minimum_consecutive_frames=4         # Higher to avoid false tracks
+        )
         self.display_id_map ={}
         self.next_display_id = 1
+        self.team_assigner = TeamAssigner()
 
     def add_positition_to_track(self,tracks):
         for object, object_tracks in tracks.items():
@@ -43,7 +50,7 @@ class Tracker:
         batch_size = 20
         detections = []
         for i in range(0, len(frames), batch_size):
-            detections_batch = self.model.predict(frames[i:i + batch_size], conf = 0.1)
+            detections_batch = self.model.predict(frames[i:i + batch_size], conf = 0.25)
             detections += detections_batch 
         return detections
 
@@ -65,7 +72,6 @@ class Tracker:
         for frame_num, detection in enumerate(detections):
             cls_names = detection.names
             cls_names_inv = {v:k for k,v in cls_names.items()}
-            print(cls_names)
 
             #Convert to supervisio Detection format
             detection_supervision = sv.Detections.from_ultralytics(detection)
@@ -73,7 +79,7 @@ class Tracker:
             #Convert goalkeeper to player
             for object_ind, class_id in enumerate(detection_supervision.class_id):
                 if cls_names[class_id] == "goalkeeper":
-                    detection_supervision.class_id[object_ind] = cls_names_inv["player"]
+                    detection_supervision.class_id[object_ind] = cls_names_inv["players"]
 
             #Track objects
             detection_with_tracks = self.tracker.update_with_detections(detection_supervision)
@@ -90,7 +96,7 @@ class Tracker:
                 if track_id < 0:
                     continue #Skip Invalide ids
 
-                if cls_id == cls_names_inv['player']:
+                if cls_id == cls_names_inv['players']:
                     tracks['players'][frame_num][track_id] = {'bbox':bbox}
 
                 if cls_id == cls_names_inv['referee']:
@@ -233,28 +239,36 @@ class Tracker:
         
         return output_video_frames
     
-    def interpolate_tracks(self, tracks, key='players'):    
-        """
-        Linearly interpolate missing object positions in tracks[key].
-        Works for 'players', 'ball', or 'referee'.
-        """
+
+
+    def interpolate_tracks_with_embeddings(self, tracks, video_frames, key='players', extract_embedding=None, similarity_threshold=0.7):
         frames = tracks[key]
         track_ids = set()
         for frame_dict in frames:
             track_ids.update(frame_dict.keys())
 
         for track_id in track_ids:
-            # Collect all frames where this track_id exists
             present = [(i, frame_dict[track_id]['bbox']) for i, frame_dict in enumerate(frames) if track_id in frame_dict]
             if len(present) < 2:
-                continue  # Need at least two detections to interpolate
+                continue
+
+            embeddings = {}
+            if extract_embedding:
+                for i, bbox in present:
+                    embeddings[i] = extract_embedding(video_frames[i], bbox)
 
             for idx in range(len(present) - 1):
                 start_frame, start_bbox = present[idx]
                 end_frame, end_bbox = present[idx + 1]
                 gap = end_frame - start_frame
+                if gap > 1 and extract_embedding:
+                    emb_start = embeddings[start_frame]
+                    emb_end = embeddings[end_frame]
+                    sim = cosine_similarity(emb_start, emb_end)
+                    if sim < similarity_threshold:
+                        continue  # Skip interpolation if appearance changed too much
+
                 if gap > 1:
-                    # Interpolate for missing frames
                     for j in range(1, gap):
                         interp_bbox = [
                             start_bbox[k] + (end_bbox[k] - start_bbox[k]) * j / gap
@@ -262,8 +276,37 @@ class Tracker:
                         ]
                         frames[start_frame + j][track_id] = {'bbox': interp_bbox}
         return tracks
+    # def interpolate_tracks(self, tracks, key='players'):    
+    #     """
+    #     Linearly interpolate missing object positions in tracks[key].
+    #     Works for 'players', 'ball', or 'referee'.
+    #     """
+    #     frames = tracks[key]
+    #     track_ids = set()
+    #     for frame_dict in frames:
+    #         track_ids.update(frame_dict.keys())
+
+    #     for track_id in track_ids:
+    #         # Collect all frames where this track_id exists
+    #         present = [(i, frame_dict[track_id]['bbox']) for i, frame_dict in enumerate(frames) if track_id in frame_dict]
+    #         if len(present) < 2:
+    #             continue  # Need at least two detections to interpolate
+
+    #         for idx in range(len(present) - 1):
+    #             start_frame, start_bbox = present[idx]
+    #             end_frame, end_bbox = present[idx + 1]
+    #             gap = end_frame - start_frame
+    #             if gap > 1:
+    #                 # Interpolate for missing frames
+    #                 for j in range(1, gap):
+    #                     interp_bbox = [
+    #                         start_bbox[k] + (end_bbox[k] - start_bbox[k]) * j / gap
+    #                         for k in range(4)
+    #                     ]
+    #                     frames[start_frame + j][track_id] = {'bbox': interp_bbox}
+    #     return tracks
     
-    def interpolate_tracks_with_embeddings(self, tracks, video_frames, key='players', extract_embedding=None):
+    # def interpolate_tracks_with_embeddings(self, tracks, video_frames, key='players', extract_embedding=None):
         """
         Interpolate missing object positions using both linear interpolation and visual embeddings.
         extract_embedding: function(frame, bbox) -> np.array (embedding vector)
